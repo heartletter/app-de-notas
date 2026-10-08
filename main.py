@@ -1,5 +1,6 @@
 import sys
 import json
+import base64
 from pathlib import Path
 import base64
 from PyQt5.QtWidgets import (
@@ -38,23 +39,28 @@ class ImageTextEdit(QTextEdit):
             super().dropEvent(event)
 
     def insert_image_from_path(self, file_path):
-        try:
-            with open(file_path, "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-            
-            ext = Path(file_path).suffix.lower().replace('.', '')
-            if ext == 'jpg':
-                ext = 'jpeg'
+        """Inserta la imagen registrándola como recurso de Qt y escalándola adecuadamente."""
+        from PyQt5.QtGui import QImage, QTextDocument
+        from PyQt5.QtCore import QUrl
 
-            image_format = f"data:image/{ext};base64,{encoded_string}"
-            html_img = f'<br><img src="{image_format}" width="400"/><br>'
-            
-            cursor = self.textCursor()
-            cursor.insertHtml(html_img)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo cargar la imagen: {str(e)}")
+        image = QImage(file_path)
+        if image.isNull():
+            QMessageBox.critical(self, "Error", "No se pudo cargar el archivo de imagen.")
+            return
 
+        # Redimensionar si es muy grande para que no desborde la nota
+        max_width = 500
+        if image.width() > max_width:
+            image = image.scaledToWidth(max_width, Qt.SmoothTransformation)
 
+        # Crear una URL única en memoria para la imagen
+        resource_url = QUrl(f"file://{file_path}")
+        self.document().addResource(QTextDocument.ImageResource, resource_url, image)
+
+        # Insertar en el cursor activo
+        cursor = self.textCursor()
+        cursor.insertImage(file_path)
+        cursor.insertText("\n")
 
         # --- REEMPLAZAR EL ÁREA DE EDICIÓN EN init_ui CON ESTO ---
         top_bar = QHBoxLayout()
@@ -77,51 +83,6 @@ class ImageTextEdit(QTextEdit):
         self.lbl_status.setObjectName("statusLabel")
         status_bar.addStretch()
         status_bar.addWidget(self.lbl_status)
-
-        editor_layout.addLayout(top_bar) # <--- Añadir esta línea
-        editor_layout.addWidget(self.text_editor)
-        editor_layout.addLayout(status_bar)
-
-
-    def open_image_dialog(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar Imagen", "", "Imágenes (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"
-        )
-        if file_path:
-            self.text_editor.insert_image_from_path(file_path)
-
-
-    # En load_notes():
-    # Cambia self.text_editor.setText(...) por:
-    self.text_editor.setHtml(self.notes[first_id]["content"])
-
-    # En select_note():
-    # Cambia self.text_editor.setText(...) por:
-    self.text_editor.setHtml(content)
-
-    # En auto_save():
-    # Guarda el HTML en lugar del texto plano para preservar las imágenes:
-    def auto_save(self):
-        if not self.current_note_id:
-            return
-
-        plain_text = self.text_editor.toPlainText()
-        html_content = self.text_editor.toHtml()
-
-        lines = [line for line in plain_text.strip().split("\n") if line.strip()]
-        title = lines[0][:25] if lines else "Nota con Imagen"
-
-        self.notes[self.current_note_id]["content"] = html_content
-        self.notes[self.current_note_id]["title"] = title
-
-        for i in range(self.notes_list.count()):
-            item = self.notes_list.item(i)
-            if item.data(Qt.UserRole) == self.current_note_id:
-                item.setText(title)
-                break
-
-        self.update_status_label(plain_text)
-        self.save_notes_to_disk()
 
 class NotesApp(QMainWindow):
     def __init__(self):
@@ -204,6 +165,13 @@ class NotesApp(QMainWindow):
         main_layout.addWidget(sidebar)
         main_layout.addWidget(editor_area)
 
+    def open_image_dialog(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar Imagen", "", "Imágenes (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"
+        )
+        if file_path:
+            self.text_editor.insert_image_from_path(file_path)
+
     # ------------------ LÓGICA DE NOTAS ------------------
     def load_notes(self):
         if self.notes_file.exists():
@@ -214,13 +182,25 @@ class NotesApp(QMainWindow):
                 self.notes = {}
 
         if not self.notes:
-            self.notes = {"1": {"title": "Nota de Bienvenida", "content": "¡Comienza a anotar!"}}
+            self.notes = {"1": {"title": "Nota de Bienvenida", "content": "<p>¡Bienvenido a tu aplicación de notas!</p>"}}
 
         self.update_notes_list()
-        # Seleccionar la primera nota
         first_id = list(self.notes.keys())[0]
         self.current_note_id = first_id
-        self.text_editor.setText(self.notes[first_id]["content"])
+        
+        # Asignar HTML usando la ruta actual como base de recursos
+        self.text_editor.setHtml(self.notes[first_id]["content"])
+
+    def select_note(self, item):
+        note_id = item.data(Qt.UserRole)
+        self.current_note_id = note_id
+        content = self.notes[note_id]["content"]
+        
+        self.text_editor.blockSignals(True)
+        self.text_editor.setHtml(content)
+        self.text_editor.blockSignals(False)
+        
+        self.update_status_label(self.text_editor.toPlainText())
 
     def save_notes_to_disk(self):
         with open(self.notes_file, "w", encoding="utf-8") as f:
@@ -257,12 +237,11 @@ class NotesApp(QMainWindow):
         self.current_note_id = note_id
         content = self.notes[note_id]["content"]
         
-        # Evitar loop infinito con textChanged
         self.text_editor.blockSignals(True)
-        self.text_editor.setText(content)
+        self.text_editor.setHtml(content)
         self.text_editor.blockSignals(False)
         
-        self.update_status_label(content)
+        self.update_status_label(self.text_editor.toPlainText())
 
     def delete_note(self):
         if not self.current_note_id or len(self.notes) <= 1:
@@ -281,24 +260,25 @@ class NotesApp(QMainWindow):
             self.load_notes()
 
     def auto_save(self):
-        if not self.current_note_id:
+        if not self.current_note_id or self.current_note_id not in self.notes:
             return
 
-        text = self.text_editor.toPlainText()
-        lines = text.strip().split("\n")
-        title = lines[0][:25] if lines and lines[0] else "Sin título"
+        plain_text = self.text_editor.toPlainText()
+        html_content = self.text_editor.toHtml()
 
-        self.notes[self.current_note_id]["content"] = text
+        lines = [line.strip() for line in plain_text.splitlines() if line.strip()]
+        title = lines[0][:25] if lines else "Nota con Imagen"
+
+        self.notes[self.current_note_id]["content"] = html_content
         self.notes[self.current_note_id]["title"] = title
 
-        # Actualizar título en la lista lateral
         for i in range(self.notes_list.count()):
             item = self.notes_list.item(i)
             if item.data(Qt.UserRole) == self.current_note_id:
                 item.setText(title)
                 break
 
-        self.update_status_label(text)
+        self.update_status_label(plain_text)
         self.save_notes_to_disk()
 
     def update_status_label(self, text):
@@ -319,51 +299,51 @@ class NotesApp(QMainWindow):
         if dark:
             style = """
                 QWidget#sidebar { background-color: #1e1e2e; border-right: 1px solid #313244; }
-                QWidget#editorArea { background-color: #181825; }
+                QWidget#editorArea { background-color: #271a30; }
                 QTextEdit#textEditor {
-                    background-color: #181825;
-                    color: #cdd6f4;
+                    background-color: #271a30;
+                    color: #bd9fcf;
                     border: none;
-                    selection-background-color: #45475a;
+                    selection-background-color: #5b4491;
                 }
                 QListWidget#notesList {
                     background-color: transparent;
-                    color: #cdd6f4;
+                    color: #a980c2;
                     border: none;
-                    font-size: 14px;
+                    font-size: 18px;
                 }
                 QListWidget#notesList::item {
                     padding: 8px 12px;
                     border-radius: 6px;
-                    margin-bottom: 4px;
+                    margin-bottom: 6px;
                 }
                 QListWidget#notesList::item:selected {
-                    background-color: #313244;
-                    color: #89b4fa;
+                    background-color: #b8a8e1;
+                    color: #6441be;
                     font-weight: bold;
                 }
                 QPushButton#btnPrimary {
-                    background-color: #89b4fa;
-                    color: #11111b;
+                    background-color: #271a30;
+                    color: #c3a0eb;
                     border-radius: 6px;
                     padding: 8px;
                     font-weight: bold;
                 }
                 QPushButton#btnPrimary:hover { background-color: #b4befe; }
                 QPushButton#btnDanger {
-                    background-color: #313244;
+                    background-color: #271a30;
                     color: #f38ba8;
                     border-radius: 6px;
                     padding: 6px;
                 }
-                QPushButton#btnDanger:hover { background-color: #f38ba8; color: #11111b; }
+                QPushButton#btnDanger:hover { background-color: #271a30; color: #11111b; }
                 QPushButton#btnSecondary {
-                    background-color: #313244;
-                    color: #cdd6f4;
+                    background-color: #c3a0eb;
+                    color: #c3a0eb
                     border-radius: 6px;
                     padding: 6px;
                 }
-                QLabel#statusLabel { color: #6c7086; font-size: 12px; }
+                QLabel#statusLabel { color: #271a30; font-size: 12px; }
             """
         else:
             style = """
