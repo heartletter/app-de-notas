@@ -1,15 +1,13 @@
 import sys
 import json
-import base64
 from pathlib import Path
-import base64
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QListWidget, QListWidgetItem, QTextEdit, QPushButton, QLabel,
-    QMessageBox, QFileDialog, 
+    QListWidget, QListWidgetItem, QTextEdit, QLineEdit, QPushButton, QLabel,
+    QMessageBox, QFileDialog
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtGui import QFont, QImage, QTextDocument
 
 class ImageTextEdit(QTextEdit):
     def __init__(self, parent=None):
@@ -40,9 +38,6 @@ class ImageTextEdit(QTextEdit):
 
     def insert_image_from_path(self, file_path):
         """Inserta la imagen registrándola como recurso de Qt y escalándola adecuadamente."""
-        from PyQt5.QtGui import QImage, QTextDocument
-        from PyQt5.QtCore import QUrl
-
         image = QImage(file_path)
         if image.isNull():
             QMessageBox.critical(self, "Error", "No se pudo cargar el archivo de imagen.")
@@ -62,27 +57,6 @@ class ImageTextEdit(QTextEdit):
         cursor.insertImage(file_path)
         cursor.insertText("\n")
 
-        # --- REEMPLAZAR EL ÁREA DE EDICIÓN EN init_ui CON ESTO ---
-        top_bar = QHBoxLayout()
-        self.btn_add_image = QPushButton("Insertar una imagen")
-        self.btn_add_image.setObjectName("btnSecondary")
-        self.btn_add_image.clicked.connect(self.open_image_dialog)
-        top_bar.addWidget(self.btn_add_image)
-        top_bar.addStretch()
-
-        # Usar la nueva clase ImageTextEdit en lugar de QTextEdit
-        self.text_editor = ImageTextEdit()
-        self.text_editor.setObjectName("textEditor")
-        self.text_editor.setPlaceholderText("Escribe tu nota aquí o arrastra imágenes!")
-        self.text_editor.setFont(QFont("Consolas", 11))
-        self.text_editor.textChanged.connect(self.auto_save)
-
-        # Barra de estado inferior
-        status_bar = QHBoxLayout()
-        self.lbl_status = QLabel("Palabras: 0 | Caracteres: 0")
-        self.lbl_status.setObjectName("statusLabel")
-        status_bar.addStretch()
-        status_bar.addWidget(self.lbl_status)
 
 class NotesApp(QMainWindow):
     def __init__(self):
@@ -144,10 +118,25 @@ class NotesApp(QMainWindow):
         editor_layout = QVBoxLayout(editor_area)
         editor_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Editor de texto
-        self.text_editor = QTextEdit()
+        # Campo para el Título de la nota
+        self.title_input = QLineEdit()
+        self.title_input.setObjectName("titleInput")
+        self.title_input.setPlaceholderText("Título de la nota...")
+        self.title_input.setFont(QFont("Consolas", 14, QFont.Bold))
+        self.title_input.textChanged.connect(self.update_note_title)
+
+        # Barra superior con botón para insertar imagen
+        top_bar = QHBoxLayout()
+        self.btn_add_image = QPushButton("Insertar una imagen")
+        self.btn_add_image.setObjectName("btnSecondary")
+        self.btn_add_image.clicked.connect(self.open_image_dialog)
+        top_bar.addWidget(self.btn_add_image)
+        top_bar.addStretch()
+
+        # Usar la nueva clase ImageTextEdit en lugar de QTextEdit
+        self.text_editor = ImageTextEdit()
         self.text_editor.setObjectName("textEditor")
-        self.text_editor.setPlaceholderText("...Escribe algo")
+        self.text_editor.setPlaceholderText("...Escribe algo o arrastra imágenes aquí")
         self.text_editor.setFont(QFont("Consolas", 11))
         self.text_editor.textChanged.connect(self.auto_save)
 
@@ -158,10 +147,13 @@ class NotesApp(QMainWindow):
         status_bar.addStretch()
         status_bar.addWidget(self.lbl_status)
 
+        # Agregar elementos al layout de edición
+        editor_layout.addWidget(self.title_input)
+        editor_layout.addLayout(top_bar)
         editor_layout.addWidget(self.text_editor)
         editor_layout.addLayout(status_bar)
 
-        # Ensamblar interfaz
+        # Ensamblar interfaz principal
         main_layout.addWidget(sidebar)
         main_layout.addWidget(editor_area)
 
@@ -188,19 +180,46 @@ class NotesApp(QMainWindow):
         first_id = list(self.notes.keys())[0]
         self.current_note_id = first_id
         
-        # Asignar HTML usando la ruta actual como base de recursos
+        # Cargar título y contenido iniciales
+        self.title_input.blockSignals(True)
+        self.title_input.setText(self.notes[first_id].get("title", "Nueva Nota"))
+        self.title_input.blockSignals(False)
+
         self.text_editor.setHtml(self.notes[first_id]["content"])
 
     def select_note(self, item):
         note_id = item.data(Qt.UserRole)
         self.current_note_id = note_id
         content = self.notes[note_id]["content"]
+        title = self.notes[note_id].get("title", "Nueva Nota")
         
+        # Actualizar título en el campo de texto superior
+        self.title_input.blockSignals(True)
+        self.title_input.setText(title)
+        self.title_input.blockSignals(False)
+
+        # Actualizar contenido del editor
         self.text_editor.blockSignals(True)
         self.text_editor.setHtml(content)
         self.text_editor.blockSignals(False)
         
         self.update_status_label(self.text_editor.toPlainText())
+
+    def update_note_title(self, text):
+        if not self.current_note_id or self.current_note_id not in self.notes:
+            return
+
+        new_title = text.strip() if text.strip() else "Sin título"
+        self.notes[self.current_note_id]["title"] = new_title
+
+        # Actualizar el texto en la lista lateral en tiempo real
+        for i in range(self.notes_list.count()):
+            item = self.notes_list.item(i)
+            if item.data(Qt.UserRole) == self.current_note_id:
+                item.setText(new_title)
+                break
+
+        self.save_notes_to_disk()
 
     def save_notes_to_disk(self):
         with open(self.notes_file, "w", encoding="utf-8") as f:
@@ -209,7 +228,7 @@ class NotesApp(QMainWindow):
     def update_notes_list(self):
         self.notes_list.clear()
         for note_id, note in self.notes.items():
-            item = QListWidgetItem(note["title"])
+            item = QListWidgetItem(note.get("title", "Nueva Nota"))
             item.setData(Qt.UserRole, note_id)
             self.notes_list.addItem(item)
 
@@ -231,17 +250,6 @@ class NotesApp(QMainWindow):
                 self.notes_list.setCurrentItem(item)
                 self.select_note(item)
                 break
-
-    def select_note(self, item):
-        note_id = item.data(Qt.UserRole)
-        self.current_note_id = note_id
-        content = self.notes[note_id]["content"]
-        
-        self.text_editor.blockSignals(True)
-        self.text_editor.setHtml(content)
-        self.text_editor.blockSignals(False)
-        
-        self.update_status_label(self.text_editor.toPlainText())
 
     def delete_note(self):
         if not self.current_note_id or len(self.notes) <= 1:
@@ -266,17 +274,8 @@ class NotesApp(QMainWindow):
         plain_text = self.text_editor.toPlainText()
         html_content = self.text_editor.toHtml()
 
-        lines = [line.strip() for line in plain_text.splitlines() if line.strip()]
-        title = lines[0][:25] if lines else "Nota con Imagen"
-
+        # Guardar solo el contenido HTML (el título se maneja independientemente)
         self.notes[self.current_note_id]["content"] = html_content
-        self.notes[self.current_note_id]["title"] = title
-
-        for i in range(self.notes_list.count()):
-            item = self.notes_list.item(i)
-            if item.data(Qt.UserRole) == self.current_note_id:
-                item.setText(title)
-                break
 
         self.update_status_label(plain_text)
         self.save_notes_to_disk()
@@ -300,6 +299,14 @@ class NotesApp(QMainWindow):
             style = """
                 QWidget#sidebar { background-color: #1e1e2e; border-right: 1px solid #313244; }
                 QWidget#editorArea { background-color: #271a30; }
+                QLineEdit#titleInput {
+                    background-color: #271a30;
+                    color: #c3a0eb;
+                    border: none;
+                    border-bottom: 2px solid #5b4491;
+                    padding: 4px;
+                    font-weight: bold;
+                }
                 QTextEdit#textEditor {
                     background-color: #271a30;
                     color: #bd9fcf;
@@ -339,25 +346,34 @@ class NotesApp(QMainWindow):
                 QPushButton#btnDanger:hover { background-color: #271a30; color: #11111b; }
                 QPushButton#btnSecondary {
                     background-color: #c3a0eb;
-                    color: #c3a0eb
+                    color: #271a30;
                     border-radius: 6px;
                     padding: 6px;
+                    font-weight: bold;
                 }
-                QLabel#statusLabel { color: #271a30; font-size: 12px; }
+                QLabel#statusLabel { color: #bd9fcf; font-size: 12px; }
             """
         else:
             style = """
                 QWidget#sidebar { background-color: #f3f4f6; border-right: 1px solid #e5e7eb; }
                 QWidget#editorArea { background-color: #ffffff; }
+                QLineEdit#titleInput {
+                    background-color: #ffffff;
+                    color: #311E4D;
+                    border: none;
+                    border-bottom: 2px solid #e5e7eb;
+                    padding: 4px;
+                    font-weight: bold;
+                }
                 QTextEdit#textEditor {
                     background-color: #ffffff;
-                    color: #1f2937;
+                    color: #8347A8;
                     border: none;
                     selection-background-color: #e5e7eb;
                 }
                 QListWidget#notesList {
                     background-color: transparent;
-                    color: #374151;
+                    color: #593D73;
                     border: none;
                     font-size: 14px;
                 }
@@ -368,17 +384,17 @@ class NotesApp(QMainWindow):
                 }
                 QListWidget#notesList::item:selected {
                     background-color: #e5e7eb;
-                    color: #2563eb;
+                    color: #7a56cc;
                     font-weight: bold;
                 }
                 QPushButton#btnPrimary {
-                    background-color: #2563eb;
+                    background-color: #BA5EEB;
                     color: #ffffff;
                     border-radius: 6px;
                     padding: 8px;
                     font-weight: bold;
                 }
-                QPushButton#btnPrimary:hover { background-color: #1d4ed8; }
+                QPushButton#btnPrimary:hover { background-color: #6943ba; }
                 QPushButton#btnDanger {
                     background-color: #fee2e2;
                     color: #dc2626;
@@ -388,9 +404,10 @@ class NotesApp(QMainWindow):
                 QPushButton#btnDanger:hover { background-color: #dc2626; color: #ffffff; }
                 QPushButton#btnSecondary {
                     background-color: #e5e7eb;
-                    color: #374151;
+                    color: #5b3b75;
                     border-radius: 6px;
                     padding: 6px;
+                    font-weight: bold;
                 }
                 QLabel#statusLabel { color: #9ca3af; font-size: 12px; }
             """
